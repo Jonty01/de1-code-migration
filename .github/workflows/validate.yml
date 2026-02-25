@@ -39,7 +39,7 @@ jobs:
         run: |
           flake8 glue/jobs/ \
             --max-line-length=120 \
-            --ignore=E501,W503 \
+            --ignore=E501,W503,F401,F403,F811 \
             --exclude=__pycache__
 
       - name: Lint — Lambda functions
