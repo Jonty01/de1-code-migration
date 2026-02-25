@@ -1,0 +1,68 @@
+##############################################################################
+# .github/workflows/validate.yml  (de1-code-migration)
+# Triggers: PRs to dev, qa, prod
+# Does:     lint Python files, run tests — gates the merge
+##############################################################################
+
+name: Validate & Test
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - qa
+      - prod
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  lint-and-test:
+    name: Lint & Test (${{ github.base_ref }})
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install flake8 pytest boto3
+
+      - name: Lint — Glue scripts
+        run: |
+          flake8 glue/jobs/ \
+            --max-line-length=120 \
+            --ignore=E501,W503 \
+            --exclude=__pycache__
+
+      - name: Lint — Lambda functions
+        run: |
+          flake8 lambda/functions/ \
+            --max-line-length=120 \
+            --ignore=E501,W503 \
+            --exclude=__pycache__
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v --tb=short
+
+      - name: Post result to PR
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ job.status }}';
+            const icon = status === 'success' ? '✅' : '❌';
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## ${icon} Code Validation — \`${{ github.base_ref }}\`\n\n**Lint:** ${{ steps.lint-and-test.outcome }}\n**Tests:** ${{ steps.lint-and-test.outcome }}\n**Status:** ${status}`
+            });

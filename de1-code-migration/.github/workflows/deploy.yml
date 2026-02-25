@@ -1,0 +1,89 @@
+##############################################################################
+# .github/workflows/deploy.yml  (de1-code-migration)
+# Triggers: push to prod (after PR merged)
+# Does:     manual approval → sync Glue scripts + Lambda packages to S3
+#
+# Prerequisites:
+#   1. GitHub Environment named "production" with required reviewers
+#   2. GitHub Secrets:
+#      - AWS_ROLE_ARN  → code_deploy_role_arn from bootstrap output
+#      - AWS_REGION    → e.g. us-east-1
+#      - PROJECT_NAME  → de1
+##############################################################################
+
+name: Deploy Code — Production
+
+on:
+  push:
+    branches:
+      - prod
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to S3 — PRODUCTION
+    runs-on: ubuntu-latest
+    environment: production   # ← manual approval gate
+
+    env:
+      ENVIRONMENT: prod
+      PROJECT_NAME: ${{ secrets.PROJECT_NAME }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # ── Upload Glue Scripts ───────────────────────────────────────────────
+      - name: Sync Glue scripts to S3
+        run: |
+          BUCKET="${{ env.PROJECT_NAME }}-${{ env.ENVIRONMENT }}-glue-scripts"
+          echo "Syncing Glue scripts to s3://${BUCKET}/jobs/"
+          aws s3 sync glue/jobs/ s3://${BUCKET}/jobs/ \
+            --delete \
+            --exclude "*.pyc" \
+            --exclude "__pycache__/*"
+          echo "✅ Glue scripts synced"
+
+      # ── Package and Upload Lambda Functions ──────────────────────────────
+      - name: Package and sync Lambda functions to S3
+        run: |
+          BUCKET="${{ env.PROJECT_NAME }}-${{ env.ENVIRONMENT }}-lambda-packages"
+          mkdir -p /tmp/lambda_zips
+
+          # Loop over each function folder and zip it
+          for func_dir in lambda/functions/*/; do
+            func_name=$(basename "$func_dir")
+            echo "Packaging Lambda function: ${func_name}"
+            cd "$func_dir"
+            zip -r "/tmp/lambda_zips/${func_name}.zip" . -x "*.pyc" -x "__pycache__/*"
+            cd -
+          done
+
+          echo "Syncing Lambda packages to s3://${BUCKET}/functions/"
+          aws s3 sync /tmp/lambda_zips/ s3://${BUCKET}/functions/ --delete
+          echo "✅ Lambda packages synced"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## ✅ Code Deploy Complete" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** production" >> $GITHUB_STEP_SUMMARY
+          echo "**Glue bucket:** ${{ env.PROJECT_NAME }}-prod-glue-scripts" >> $GITHUB_STEP_SUMMARY
+          echo "**Lambda bucket:** ${{ env.PROJECT_NAME }}-prod-lambda-packages" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
